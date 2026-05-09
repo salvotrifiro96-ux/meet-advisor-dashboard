@@ -1,0 +1,5 @@
+# Supabase project config (gestito da Supabase CLI)
+# Project ref settato via `supabase link --project-ref <ref>`
+
+[functions.meet-event]
+verify_jwt = false
