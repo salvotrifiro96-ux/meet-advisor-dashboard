@@ -16,3 +16,4 @@ venv/
 htmlcov/
 supabase/.temp/
 supabase/.branches/
+extension/config.js
