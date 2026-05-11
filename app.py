@@ -21,6 +21,7 @@ load_dotenv()
 
 
 REFRESH_INTERVAL_MS = 1000
+GRID_COLUMNS = 3
 
 
 def _read_password() -> str:
@@ -75,10 +76,14 @@ def inject_styles() -> None:
           0%, 100% { opacity: 1; }
           50% { opacity: 0.65; }
         }
+        @keyframes pulse-card {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.25); }
+          50% { box-shadow: 0 0 0 6px rgba(34, 197, 94, 0.05); }
+        }
         .status-dot {
           display: inline-block;
-          width: 14px;
-          height: 14px;
+          width: 12px;
+          height: 12px;
           border-radius: 50%;
           vertical-align: middle;
         }
@@ -88,26 +93,6 @@ def inject_styles() -> None:
         .status-idle {
           background-color: #9ca3af;
         }
-        .advisor-name {
-          font-size: 1.05rem;
-          font-weight: 500;
-          vertical-align: middle;
-        }
-        .advisor-name-live {
-          color: #16a34a;
-          font-weight: 700;
-          animation: pulse-name 1.6s ease-in-out infinite;
-        }
-        .timer-live {
-          color: #16a34a;
-          font-weight: 700;
-          font-variant-numeric: tabular-nums;
-          font-size: 1.15rem;
-        }
-        .timer-idle {
-          color: #6b7280;
-          font-style: italic;
-        }
         .source-badge {
           display: inline-block;
           padding: 2px 8px;
@@ -115,7 +100,6 @@ def inject_styles() -> None:
           font-size: 0.7rem;
           font-weight: 600;
           letter-spacing: 0.04em;
-          margin-left: 8px;
           vertical-align: middle;
         }
         .source-auto {
@@ -128,13 +112,85 @@ def inject_styles() -> None:
           color: #6366f1;
           border: 1px solid rgba(99, 102, 241, 0.4);
         }
-        .row-divider {
-          border-bottom: 1px solid rgba(150, 150, 150, 0.18);
-          margin: 0.25rem 0;
+
+        /* Card-based grid layout */
+        div[data-testid="stVerticalBlockBorderWrapper"]:has(.advisor-card-marker-live) {
+          border-color: rgba(34, 197, 94, 0.55) !important;
+          box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.25), 0 8px 18px -10px rgba(34, 197, 94, 0.35) !important;
+          animation: pulse-card 1.8s ease-in-out infinite;
         }
-        .meet-link a {
-          text-decoration: none;
+        .card-status-row {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 4px;
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+        }
+        .card-status-row.live {
+          color: #16a34a;
+          animation: pulse-name 1.6s ease-in-out infinite;
+        }
+        .card-status-row.idle {
+          color: #9ca3af;
+        }
+        /* card-name: usa il colore di testo del tema (funziona light + dark) */
+        .card-name {
+          font-size: 1.25rem;
+          font-weight: 700;
+          line-height: 1.2;
+          margin-bottom: 12px;
+          color: inherit;
+        }
+        .card-name.live {
+          color: #16a34a;
+        }
+        .card-timer {
+          font-variant-numeric: tabular-nums;
+          font-size: 1.9rem;
+          font-weight: 700;
+          color: #16a34a;
+          margin-bottom: 4px;
+        }
+        .card-last-session {
+          color: #6b7280;
+          font-style: italic;
+          font-size: 0.9rem;
+          margin-bottom: 4px;
+        }
+        .card-sessions {
+          color: #6b7280;
+          font-size: 0.85rem;
+          margin-top: 8px;
+          margin-bottom: 12px;
+        }
+        .card-sessions strong {
+          color: inherit;
+          font-weight: 700;
+        }
+        .meet-link-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 100%;
+          padding: 6px 12px;
+          border: 1px solid rgba(120, 120, 120, 0.4);
+          border-radius: 8px;
+          text-decoration: none !important;
+          font-size: 0.85rem;
           font-weight: 500;
+          color: inherit !important;
+          background: transparent;
+          transition: all 0.15s ease;
+          box-sizing: border-box;
+          height: 38px;
+        }
+        .meet-link-btn:hover {
+          border-color: rgba(34, 197, 94, 0.7);
+          color: #16a34a !important;
+          background: rgba(34, 197, 94, 0.06);
         }
         </style>
         """,
@@ -158,76 +214,109 @@ def render_header(live_count: int, total_advisors: int, stats: dict) -> None:
     )
 
 
-def render_table_header() -> None:
-    cols = st.columns([0.4, 2.4, 2, 1.2, 1.2, 1])
-    cols[0].markdown("**•**")
-    cols[1].markdown("**Advisor**")
-    cols[2].markdown("**Timer / Ultima sessione**")
-    cols[3].markdown("**Consulenze oggi**")
-    cols[4].markdown("**Azione**")
-    cols[5].markdown("**Meet**")
-
-
-def render_advisor_row(advisor: dict, now: datetime) -> None:
-    cols = st.columns([0.4, 2.4, 2, 1.2, 1.2, 1])
+def render_advisor_card(advisor: dict, now: datetime) -> None:
     is_live = bool(advisor.get("is_live"))
 
-    if is_live:
-        cols[0].markdown(
-            '<span class="status-dot status-live"></span>',
-            unsafe_allow_html=True,
-        )
-        source = (advisor.get("last_event_source") or "manual").lower()
-        if source == "extension":
-            badge_html = '<span class="source-badge source-auto">AUTO</span>'
-        else:
-            badge_html = '<span class="source-badge source-manual">MANUAL</span>'
-        cols[1].markdown(
-            f'<span class="advisor-name advisor-name-live">{advisor["name"]}</span>{badge_html}',
-            unsafe_allow_html=True,
-        )
-        started = parse_iso_utc(advisor.get("session_started_at"))
-        if started:
-            elapsed = int((now - started).total_seconds())
-            cols[2].markdown(
-                f'<span class="timer-live">⏱ {format_timer_hms(elapsed)}</span>',
+    with st.container(border=True):
+        # Hidden marker — used by CSS :has() to style the parent container
+        # in green when the advisor is live.
+        if is_live:
+            st.markdown(
+                '<span class="advisor-card-marker-live" style="display:none"></span>',
+                unsafe_allow_html=True,
+            )
+
+        # Status row (LIVE / IDLE label + source badge)
+        if is_live:
+            source = (advisor.get("last_event_source") or "manual").lower()
+            badge_class = "source-auto" if source == "extension" else "source-manual"
+            badge_label = "AUTO" if source == "extension" else "MANUAL"
+            st.markdown(
+                f'<div class="card-status-row live">'
+                f'<span class="status-dot status-live"></span>'
+                f'<span>LIVE</span>'
+                f'<span class="source-badge {badge_class}">{badge_label}</span>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
         else:
-            cols[2].markdown("—")
-        cols[3].markdown(f"{advisor['sessions_today']}")
-        if cols[4].button("⏹ Stop", key=f"stop_{advisor['id']}", type="primary"):
-            stop_session(advisor["id"])
-            st.rerun()
-    else:
-        cols[0].markdown(
-            '<span class="status-dot status-idle"></span>',
+            st.markdown(
+                '<div class="card-status-row idle">'
+                '<span class="status-dot status-idle"></span>'
+                '<span>Idle</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+        # Advisor name
+        name_class = "card-name live" if is_live else "card-name"
+        st.markdown(
+            f'<div class="{name_class}">{advisor["name"]}</div>',
             unsafe_allow_html=True,
         )
-        cols[1].markdown(
-            f'<span class="advisor-name">{advisor["name"]}</span>',
-            unsafe_allow_html=True,
-        )
-        last_ended = parse_iso_utc(advisor.get("last_session_ended_at"))
-        if last_ended:
-            cols[2].markdown(
-                f'<span class="timer-idle">{format_relative_minutes(last_ended, now)}</span>',
+
+        # Timer (live) or last-session label (idle)
+        if is_live:
+            started = parse_iso_utc(advisor.get("session_started_at"))
+            elapsed = int((now - started).total_seconds()) if started else 0
+            st.markdown(
+                f'<div class="card-timer">⏱ {format_timer_hms(elapsed)}</div>',
                 unsafe_allow_html=True,
             )
         else:
-            cols[2].markdown('<span class="timer-idle">nessuna oggi</span>',
-                             unsafe_allow_html=True)
-        cols[3].markdown(f"{advisor['sessions_today']}")
-        if cols[4].button("▶ Start", key=f"start_{advisor['id']}"):
-            start_session(advisor["id"])
-            st.rerun()
+            last_ended = parse_iso_utc(advisor.get("last_session_ended_at"))
+            if last_ended:
+                label = format_relative_minutes(last_ended, now)
+            else:
+                label = "nessuna consulenza oggi"
+            st.markdown(
+                f'<div class="card-last-session">{label}</div>',
+                unsafe_allow_html=True,
+            )
 
-    cols[5].markdown(
-        f'<div class="meet-link">[ Apri ↗ ]({advisor["meet_link"]})</div>',
-        unsafe_allow_html=True,
-    )
+        # Sessions count today
+        count = advisor["sessions_today"]
+        label = "consulenza" if count == 1 else "consulenze"
+        st.markdown(
+            f'<div class="card-sessions">📊 <strong>{count}</strong> {label} oggi (≥10 min)</div>',
+            unsafe_allow_html=True,
+        )
 
-    st.markdown('<div class="row-divider"></div>', unsafe_allow_html=True)
+        # Action button + Meet link side by side
+        action_col, link_col = st.columns([1, 1])
+        with action_col:
+            if is_live:
+                if st.button(
+                    "⏹ Stop",
+                    key=f"stop_{advisor['id']}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    stop_session(advisor["id"])
+                    st.rerun()
+            else:
+                if st.button(
+                    "▶ Start",
+                    key=f"start_{advisor['id']}",
+                    use_container_width=True,
+                ):
+                    start_session(advisor["id"])
+                    st.rerun()
+        with link_col:
+            st.markdown(
+                f'<a href="{advisor["meet_link"]}" target="_blank" '
+                f'rel="noopener noreferrer" class="meet-link-btn">Apri Meet ↗</a>',
+                unsafe_allow_html=True,
+            )
+
+
+def render_advisor_grid(advisors: list[dict], now: datetime) -> None:
+    for start in range(0, len(advisors), GRID_COLUMNS):
+        row_advisors = advisors[start : start + GRID_COLUMNS]
+        cols = st.columns(GRID_COLUMNS)
+        for col, advisor in zip(cols, row_advisors):
+            with col:
+                render_advisor_card(advisor, now)
 
 
 def render_admin_panel(advisors: list[dict]) -> None:
@@ -273,12 +362,7 @@ def main() -> None:
     )
 
     st.divider()
-    render_table_header()
-    st.markdown('<div class="row-divider"></div>', unsafe_allow_html=True)
-
-    for advisor in advisors:
-        render_advisor_row(advisor, now)
-
+    render_advisor_grid(advisors, now)
     st.divider()
     render_admin_panel(advisors)
     st.caption("Live Advisor Dashboard · Leone Master School")
