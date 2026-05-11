@@ -5,9 +5,34 @@ from db.client import get_supabase
 from db.format import parse_iso_utc
 
 
+# Soglia minima per considerare una sessione una vera "consulenza" — sotto
+# questo tempo si tratta di test, click accidentali o ingressi rapidi.
+MIN_CONSULTATION_SECONDS = 10 * 60
+
+
 def _today_start_iso() -> str:
     now = datetime.now(timezone.utc)
     return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+
+def _session_duration_seconds(session: dict[str, Any], now: datetime) -> int:
+    """Durata effettiva della sessione in secondi.
+
+    - Se la sessione è già chiusa, usa `duration_seconds` (può essere 0 per
+      sessioni resettate).
+    - Se la sessione è ancora live (no ended_at), calcola `now - started_at`.
+    """
+    if session.get("ended_at"):
+        return int(session.get("duration_seconds") or 0)
+    started = parse_iso_utc(session.get("started_at"))
+    if not started:
+        return 0
+    return max(0, int((now - started).total_seconds()))
+
+
+def _is_real_consultation(session: dict[str, Any], now: datetime) -> bool:
+    """True se la sessione ha superato la soglia minima per essere una consulenza."""
+    return _session_duration_seconds(session, now) >= MIN_CONSULTATION_SECONDS
 
 
 def get_all_advisors() -> list[dict[str, Any]]:
@@ -30,6 +55,8 @@ def get_all_advisors() -> list[dict[str, Any]]:
         .data
     ) or []
 
+    now = datetime.now(timezone.utc)
+
     sessions_by_advisor: dict[int, list[dict[str, Any]]] = {}
     for session in sessions:
         sessions_by_advisor.setdefault(session["advisor_id"], []).append(session)
@@ -37,17 +64,20 @@ def get_all_advisors() -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for advisor in advisors:
         today_sessions = sessions_by_advisor.get(advisor["id"], [])
+        real_today = [s for s in today_sessions if _is_real_consultation(s, now)]
         completed_today = [s for s in today_sessions if s.get("ended_at")]
         last_ended_at = (
             max(s["ended_at"] for s in completed_today) if completed_today else None
         )
+        # Per il tempo totale "oggi" sommiamo solo le consulenze reali, così
+        # il dato è coerente col conteggio "Consulenze oggi".
         total_duration_today = sum(
-            int(s["duration_seconds"] or 0) for s in completed_today
+            _session_duration_seconds(s, now) for s in real_today
         )
         enriched.append(
             {
                 **advisor,
-                "sessions_today": len(today_sessions),
+                "sessions_today": len(real_today),
                 "last_session_ended_at": last_ended_at,
                 "total_duration_today_seconds": total_duration_today,
             }
@@ -143,12 +173,16 @@ def get_today_stats() -> dict[str, Any]:
     ) or []
     advisors = sb.table("advisors").select("is_live").execute().data or []
 
+    now = datetime.now(timezone.utc)
     live_now = sum(1 for a in advisors if a.get("is_live"))
-    total_today = len(sessions)
 
-    completed = [s for s in sessions if s.get("duration_seconds")]
-    if completed:
-        durations = [int(s["duration_seconds"]) for s in completed]
+    # Solo sessioni che hanno superato i 10 minuti contano come "consulenze".
+    # Include sessioni ancora live se hanno gia` superato la soglia.
+    real_sessions = [s for s in sessions if _is_real_consultation(s, now)]
+    total_today = len(real_sessions)
+
+    durations = [_session_duration_seconds(s, now) for s in real_sessions]
+    if durations:
         avg_seconds = sum(durations) / len(durations)
         total_seconds = sum(durations)
     else:
