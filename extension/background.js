@@ -10,6 +10,12 @@ const CONFIG = self.LEONE_CONFIG;
 // Map<tabId, { meet_link: string, in_call: boolean }>
 const tabState = new Map();
 
+const HEARTBEAT_ALARM = "leone-live-heartbeat";
+// chrome.alarms minimo accettato e` 1 minuto su Chrome stable (puo` essere
+// 30s in dev). Va comunque bene: ci serve un controllo periodico di tab
+// fantasma anche quando il service worker e` dormiente.
+const HEARTBEAT_PERIOD_MIN = 1;
+
 async function postEvent(meetLink, action) {
   if (!CONFIG?.SUPABASE_FUNCTION_URL || !CONFIG?.SHARED_SECRET) {
     console.error("[Leone Live] Missing config — set SUPABASE_FUNCTION_URL and SHARED_SECRET in config.js");
@@ -62,7 +68,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const meetLink = message.meet_link;
   const action = message.action;
 
-  if (!meetLink || !["joined", "left"].includes(action)) {
+  if (!meetLink || !["joined", "left", "heartbeat"].includes(action)) {
     sendResponse({ ok: false, error: "invalid_message" });
     return false;
   }
@@ -70,9 +76,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (tabId !== undefined) {
     if (action === "joined") {
       tabState.set(tabId, { meet_link: meetLink, in_call: true });
-    } else {
+    } else if (action === "left") {
       tabState.delete(tabId);
     }
+    // heartbeat non altera tabState
   }
 
   postEvent(meetLink, action).then(sendResponse);
@@ -89,22 +96,34 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-// Heartbeat — every minute, check for any tracked tabs that no longer exist
-// (covers crash/forced close scenarios).
-const HEARTBEAT_MS = CONFIG?.HEARTBEAT_INTERVAL_MS ?? 60_000;
-setInterval(async () => {
+// chrome.alarms sopravvive al sleep del service worker MV3, dove setInterval
+// invece smetterebbe di girare dopo ~30s di inattivita`. Usiamo l'alarm per
+// chiudere sessioni di tab "fantasma" (browser killato, crash, ecc.).
+async function sweepGhostTabs() {
   if (tabState.size === 0) return;
-
-  const allTabs = await chrome.tabs.query({});
-  const liveIds = new Set(allTabs.map((t) => t.id));
-
-  for (const [tabId, state] of tabState.entries()) {
-    if (!liveIds.has(tabId)) {
-      console.log("[Leone Live] tab vanished, sending left", state.meet_link);
-      postEvent(state.meet_link, "left");
-      tabState.delete(tabId);
+  try {
+    const allTabs = await chrome.tabs.query({});
+    const liveIds = new Set(allTabs.map((t) => t.id));
+    for (const [tabId, state] of tabState.entries()) {
+      if (!liveIds.has(tabId)) {
+        console.log("[Leone Live] tab vanished, sending left", state.meet_link);
+        postEvent(state.meet_link, "left");
+        tabState.delete(tabId);
+      }
     }
+  } catch (err) {
+    console.warn("[Leone Live] sweep failed", err);
   }
-}, HEARTBEAT_MS);
+}
+
+chrome.alarms.create(HEARTBEAT_ALARM, {
+  periodInMinutes: HEARTBEAT_PERIOD_MIN,
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === HEARTBEAT_ALARM) {
+    sweepGhostTabs();
+  }
+});
 
 console.log("[Leone Live] background ready");

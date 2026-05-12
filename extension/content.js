@@ -8,6 +8,10 @@
 
   const MUTATION_DEBOUNCE_MS = 250;
   const POLL_INTERVAL_MS = 5000;
+  // Heartbeat inviato al background ogni N ms quando in call.
+  // Il background lo inoltra alla edge function: cosi` la dashboard puo`
+  // rilevare sessioni "stale" (es. tab chiusa senza fire dei left handlers).
+  const HEARTBEAT_INTERVAL_MS = 30000;
 
   const MEET_CODE_REGEX = /\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:\/?|\?|$)/i;
 
@@ -15,20 +19,37 @@
   // Meet UI versions. We match aria-label across IT/EN locales and also
   // tooltip-based fallbacks.
   const LEAVE_BUTTON_SELECTORS = [
-    'button[aria-label*="leave" i]',
-    'button[aria-label*="abbandona" i]',
+    'button[aria-label*="leave call" i]',
+    'button[aria-label*="abbandona chiamata" i]',
     'button[aria-label*="lascia la chiamata" i]',
     'button[aria-label*="esci dalla chiamata" i]',
     'button[aria-label*="termina chiamata" i]',
     'button[aria-label*="end call" i]',
     'button[data-tooltip-id*="leave" i]',
-    'div[role="button"][aria-label*="leave" i]',
-    'div[role="button"][aria-label*="abbandona" i]',
+    'div[role="button"][aria-label*="leave call" i]',
+    'div[role="button"][aria-label*="abbandona chiamata" i]',
+  ];
+
+  // Frasi tipiche della "you left the call" page. Se le vediamo, siamo
+  // sicuramente FUORI dalla call anche se per qualche istante un bottone
+  // residuo dovesse matchare i selettori sopra.
+  const LEFT_CALL_PHRASES = [
+    "you left the meeting",
+    "you left the call",
+    "sei uscito dalla riunione",
+    "sei uscito dalla chiamata",
+    "hai abbandonato la chiamata",
+    "hai abbandonato la riunione",
+    "returning to home screen",
+    "rejoin",
+    "partecipa di nuovo",
+    "torna alla schermata principale",
   ];
 
   let isInCall = false;
   let observer = null;
   let pollTimer = null;
+  let heartbeatTimer = null;
   let debounceTimer = null;
 
   function getMeetCodeFromUrl() {
@@ -48,6 +69,20 @@
       } catch (_) {
         /* invalid selector on legacy browser, skip */
       }
+    }
+    return false;
+  }
+
+  function isOnLeftCallPage() {
+    // Cerchiamo nel body text le frasi della post-call page.
+    // textContent puo` essere costoso ma il body subito dopo aver lasciato
+    // la chiamata e` piccolo (Meet smonta gran parte della UI).
+    const body = document.body;
+    if (!body) return false;
+    const text = (body.innerText || body.textContent || "").toLowerCase();
+    if (!text) return false;
+    for (const phrase of LEFT_CALL_PHRASES) {
+      if (text.includes(phrase)) return true;
     }
     return false;
   }
@@ -81,7 +116,11 @@
       return;
     }
 
-    const inCallNow = isLeaveButtonPresent();
+    // Se siamo sulla post-call page, siamo FUORI dalla call anche se l'URL
+    // ha ancora il code. Trattiamo questo segnale come prioritario su
+    // qualunque bottone residuo.
+    const onLeftPage = isOnLeftCallPage();
+    const inCallNow = !onLeftPage && isLeaveButtonPresent();
 
     if (inCallNow && !isInCall) {
       isInCall = true;
@@ -97,6 +136,11 @@
     debounceTimer = setTimeout(evaluateState, MUTATION_DEBOUNCE_MS);
   }
 
+  function sendHeartbeat() {
+    if (!isInCall) return;
+    sendEvent("heartbeat");
+  }
+
   function start() {
     if (observer) return;
 
@@ -109,6 +153,7 @@
     });
 
     pollTimer = setInterval(evaluateState, POLL_INTERVAL_MS);
+    heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
     evaluateState();
   }
 
@@ -120,6 +165,10 @@
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
+    }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
     }
     if (isInCall) {
       isInCall = false;

@@ -8,13 +8,15 @@ CREATE TABLE IF NOT EXISTS advisors (
   meet_link TEXT NOT NULL,
   is_live BOOLEAN NOT NULL DEFAULT FALSE,
   session_started_at TIMESTAMPTZ NULL,
+  last_heartbeat_at TIMESTAMPTZ NULL,
   display_order INT NOT NULL DEFAULT 0,
   last_event_source TEXT NULL,  -- 'manual' | 'extension'
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Idempotente: aggiunge la colonna anche se la tabella esisteva già
+-- Idempotente: aggiunge le colonne anche se la tabella esisteva già
 ALTER TABLE advisors ADD COLUMN IF NOT EXISTS last_event_source TEXT;
+ALTER TABLE advisors ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS consultation_sessions (
   id SERIAL PRIMARY KEY,

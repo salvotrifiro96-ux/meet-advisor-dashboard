@@ -31,9 +31,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 interface EventPayload {
   meet_link: string;
-  action: "joined" | "left";
+  action: "joined" | "left" | "heartbeat";
   source?: string;
 }
+
+const VALID_ACTIONS = ["joined", "left", "heartbeat"] as const;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -75,7 +77,10 @@ serve(async (req: Request): Promise<Response> => {
     return jsonResponse({ error: "Invalid JSON body" }, 400);
   }
 
-  if (!payload?.meet_link || !["joined", "left"].includes(payload?.action)) {
+  if (
+    !payload?.meet_link ||
+    !VALID_ACTIONS.includes(payload?.action as typeof VALID_ACTIONS[number])
+  ) {
     return jsonResponse({ error: "Invalid payload" }, 400);
   }
 
@@ -109,6 +114,11 @@ serve(async (req: Request): Promise<Response> => {
 
   if (payload.action === "joined") {
     if (advisor.is_live) {
+      // Refresh heartbeat anche se gia` live (l'estensione sta rinotificando)
+      await supabase
+        .from("advisors")
+        .update({ last_heartbeat_at: nowIso, last_event_source: source })
+        .eq("id", advisor.id);
       return jsonResponse({
         status: "already_live",
         advisor: advisor.name,
@@ -133,6 +143,7 @@ serve(async (req: Request): Promise<Response> => {
       .update({
         is_live: true,
         session_started_at: nowIso,
+        last_heartbeat_at: nowIso,
         last_event_source: source,
       })
       .eq("id", advisor.id);
@@ -146,6 +157,20 @@ serve(async (req: Request): Promise<Response> => {
       advisor: advisor.name,
       session_started_at: nowIso,
     });
+  }
+
+  if (payload.action === "heartbeat") {
+    if (!advisor.is_live) {
+      return jsonResponse({ status: "not_live", advisor: advisor.name });
+    }
+    const { error: hbErr } = await supabase
+      .from("advisors")
+      .update({ last_heartbeat_at: nowIso, last_event_source: source })
+      .eq("id", advisor.id);
+    if (hbErr) {
+      return jsonResponse({ error: "Heartbeat update failed", detail: hbErr.message }, 500);
+    }
+    return jsonResponse({ status: "heartbeat_ok", advisor: advisor.name });
   }
 
   // action === "left"
@@ -180,6 +205,7 @@ serve(async (req: Request): Promise<Response> => {
     .update({
       is_live: false,
       session_started_at: null,
+      last_heartbeat_at: null,
       last_event_source: source,
     })
     .eq("id", advisor.id);

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from db.client import get_supabase
@@ -8,6 +8,13 @@ from db.format import parse_iso_utc
 # Soglia minima per considerare una sessione una vera "consulenza" — sotto
 # questo tempo si tratta di test, click accidentali o ingressi rapidi.
 MIN_CONSULTATION_SECONDS = 10 * 60
+
+# Una sessione AUTO (source='extension') si considera "stale" se non riceve
+# heartbeat dall'estensione per piu` di questo intervallo. Il content script
+# manda heartbeat ogni 30s, percio` 3 minuti danno margine per tab in pausa
+# o connessione instabile. Le sessioni MANUAL non vengono mai chiuse
+# automaticamente: l'operatore le ha avviate esplicitamente e deve fermarle.
+STALE_HEARTBEAT_SECONDS = 180
 
 
 def _today_start_iso() -> str:
@@ -35,6 +42,44 @@ def _is_real_consultation(session: dict[str, Any], now: datetime) -> bool:
     return _session_duration_seconds(session, now) >= MIN_CONSULTATION_SECONDS
 
 
+def _is_stale_auto_session(advisor: dict[str, Any], now: datetime) -> bool:
+    """True se l'advisor e` marcato live via extension ma non manda heartbeat
+    da troppo tempo. Le sessioni manual non vengono mai considerate stale.
+    """
+    if not advisor.get("is_live"):
+        return False
+    source = (advisor.get("last_event_source") or "").lower()
+    if source != "extension":
+        return False
+    # Riferimento: heartbeat se presente, altrimenti l'orario di start.
+    ref_raw = advisor.get("last_heartbeat_at") or advisor.get("session_started_at")
+    ref = parse_iso_utc(ref_raw)
+    if not ref:
+        return False
+    return (now - ref) > timedelta(seconds=STALE_HEARTBEAT_SECONDS)
+
+
+def _auto_close_stale_sessions(
+    advisors: list[dict[str, Any]], now: datetime
+) -> list[dict[str, Any]]:
+    """Chiude le sessioni AUTO stale e ritorna gli advisor con stato aggiornato
+    in memoria (cosi` evitiamo una seconda query per riflettere il cambio).
+    """
+    stale_ids = [a["id"] for a in advisors if _is_stale_auto_session(a, now)]
+    if not stale_ids:
+        return advisors
+
+    for advisor_id in stale_ids:
+        stop_session(advisor_id)
+
+    return [
+        {**a, "is_live": False, "session_started_at": None}
+        if a["id"] in set(stale_ids)
+        else a
+        for a in advisors
+    ]
+
+
 def get_all_advisors() -> list[dict[str, Any]]:
     sb = get_supabase()
 
@@ -46,6 +91,9 @@ def get_all_advisors() -> list[dict[str, Any]]:
         .data
     ) or []
 
+    now = datetime.now(timezone.utc)
+    advisors = _auto_close_stale_sessions(advisors, now)
+
     today_start = _today_start_iso()
     sessions = (
         sb.table("consultation_sessions")
@@ -54,8 +102,6 @@ def get_all_advisors() -> list[dict[str, Any]]:
         .execute()
         .data
     ) or []
-
-    now = datetime.now(timezone.utc)
 
     sessions_by_advisor: dict[int, list[dict[str, Any]]] = {}
     for session in sessions:
@@ -171,9 +217,15 @@ def get_today_stats() -> dict[str, Any]:
         .execute()
         .data
     ) or []
-    advisors = sb.table("advisors").select("is_live").execute().data or []
+    advisors = (
+        sb.table("advisors")
+        .select("id, is_live, last_event_source, last_heartbeat_at, session_started_at")
+        .execute()
+        .data
+    ) or []
 
     now = datetime.now(timezone.utc)
+    advisors = _auto_close_stale_sessions(advisors, now)
     live_now = sum(1 for a in advisors if a.get("is_live"))
 
     # Solo sessioni che hanno superato i 10 minuti contano come "consulenze".
